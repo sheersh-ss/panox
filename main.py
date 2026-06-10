@@ -1,3 +1,15 @@
+# ACTIVE IMPLEMENTATION:
+#   - main_cca_analysis_filter.py
+#
+# COMMENTED REFERENCE IMPLEMENTATIONS:
+#   - main_adaptive_roi_cropping.py line 96-97, 117-128, 144-153, 346-347
+#   - main_top_k_averaging.py line 258-278
+#
+# Notes:
+#   Only the CCA analysis filter implementation below is executable.
+#   The other attempted variants are kept
+#   as commented reference code for transparency and reproducibility.
+
 import argparse
 from glob import glob
 import os
@@ -10,6 +22,7 @@ import subprocess
 import time
 import shutil
 import warnings
+from scipy import ndimage
 from report_guided_annotation.extract_lesion_candidates import extract_lesion_candidates
 warnings.filterwarnings("ignore")
 
@@ -62,7 +75,12 @@ def downsample_panorama_dataset(img_dir, img_save_dir, resample=(4.5, 4.5, 9.0))
     assert osp.exists(img_dir), f'image directory does not exist: {img_dir}'
     if not osp.exists(img_save_dir):
         os.mkdir(img_save_dir)
-    img_paths = sorted(glob(img_dir + '/*.*'))
+    valid_exts = ('.mha', '.nii', '.nii.gz')
+
+    img_paths = sorted(
+        [p for p in glob(img_dir + '/*')
+        if p.endswith(valid_exts)]
+)
     if len(img_paths) == 0:
         print('No images found in input directory')
     with tqdm(total=len(img_paths)) as pbar:
@@ -75,9 +93,15 @@ def downsample_panorama_dataset(img_dir, img_save_dir, resample=(4.5, 4.5, 9.0))
 
 
 def crop_roi(img_dir, low_msk_dir, save_img_dir, margins=[100, 50, 15]):
+# Adaptive ROI cropping variant: changed the function signature to accept default and expanded margins.
+# def crop_roi(img_dir, low_msk_dir, save_img_dir, default_margins = [100, 50, 15], expanded_margins = [150, 75, 25]):
     if not osp.exists(save_img_dir):
         os.mkdir(save_img_dir)
-    img_paths = sorted(glob(img_dir + '/*.*'))
+    valid_exts = ('.mha', '.nii', '.nii.gz')
+    img_paths = sorted(
+            [p for p in glob(img_dir + '/*')
+            if p.endswith(valid_exts)]
+        )
     crop_coordinates = {}
     with tqdm(total=len(img_paths)) as pbar:
         for img_path in img_paths:
@@ -88,6 +112,20 @@ def crop_roi(img_dir, low_msk_dir, save_img_dir, margins=[100, 50, 15]):
             pancreas_mask_np = sitk.GetArrayFromImage(low_msk)
             pancreas_mask_np[pancreas_mask_np != 1] = 0
             pancreas_mask_np[pancreas_mask_np != 0] = 1
+
+            """            
+            #Adaptive ROI cropping variant
+            low_prob_path = osp.join(low_msk_dir, osp.basename(img_path).replace(ext, '.npz'))
+
+            pancreas_confidence = None
+
+            if osp.exists(low_prob_path):
+                prob = np.load(low_prob_path)
+                pancreas_prob_np = prob["probabilities"][1]
+
+                if np.any(pancreas_mask_np == 1):
+                    pancreas_confidence = float(pancreas_prob_np[pancreas_mask_np == 1].mean())
+             """
             pancreas_mask_nonzeros = np.nonzero(pancreas_mask_np)
             min_x = min(pancreas_mask_nonzeros[2])
             min_y = min(pancreas_mask_nonzeros[1])
@@ -103,6 +141,16 @@ def crop_roi(img_dir, low_msk_dir, save_img_dir, margins=[100, 50, 15]):
             finish_point = img.TransformPhysicalPointToIndex(finish_point_physical)
             spacing = img.GetSpacing()
             size = img.GetSize()
+            """
+            #Adaptive ROI cropping variant
+            if pancreas_confidence is not None and pancreas_confidence < 0.80:
+                case_margins = expanded_margins
+            else:
+                case_margins = default_margins
+            marginx = int(case_margins[0]/spacing[0])
+            marginy = int(case_margins[1]/spacing[1])
+            marginz = int(case_margins[2]/spacing[2])
+            """
             marginx = int(margins[0]/spacing[0])
             marginy = int(margins[1]/spacing[1])
             marginz = int(margins[2]/spacing[2])
@@ -124,6 +172,38 @@ def crop_roi(img_dir, low_msk_dir, save_img_dir, margins=[100, 50, 15]):
             pbar.update(1)
     return crop_coordinates
 
+def remove_small_components(prob_map, spacing, min_vol= 200):
+    """
+    Remove tiny disconnected prediction blobs using connected
+    component analysis (CCA).
+
+    Parameters
+    ----------
+    prob_map : ndarray
+        Probability map from nnU-Net.
+
+    spacing : tuple
+        Voxel spacing (x,y,z).
+
+    min_vol : float
+        Minimum lesion volume in mm³.
+    """
+
+    mask = prob_map > 0.05
+    labeled, num = ndimage.label(mask)
+    if num == 0:
+        return prob_map.astype(np.float32)
+
+    voxel_volume = np.prod(spacing)
+    cleaned = prob_map.copy().astype(np.float32)
+    
+    for component_id in range(1, num + 1):
+        component = (labeled == component_id)
+        component_volume = component.sum() * voxel_volume
+
+        if component_volume < min_vol:
+            cleaned[component] = 0.0
+    return cleaned
 
 def predict(nnunet_model_dir, input_dir, output_dir, task:int, trainer:str="nnUNetTrainer", plan:str="nnUNetPlans",
             configuration="3d_fullres", checkpoint="checkpoint_final.pth", 
@@ -175,6 +255,27 @@ def PostProcessing(cropped_prediction, pred_path_nifti):
 
 def GetFullSizDetectionMap(prediction_np, crop_coordinates, full_image, inv_alpha=15):
     lesion_candidates, confidences, indexed_pred = extract_lesion_candidates(prediction_np, dynamic_threshold_factor=inv_alpha)  
+
+
+    """    
+    Alternative patient-level scoring: top-k averaging.
+    This block belongs to the top-k averaging experiment. Instead of using
+    the maximum lesion candidate value as the patient-level prediction, it
+    takes the top k highest non-zero voxel probabilities from the raw PDAC
+    probability map and averages them. This was tested as an alternative
+    scoring strategy but is not active in the final CCA-based submission.
+    # Stronger top-k scoring:
+    # Uses raw PDAC probability map before lesion candidate post-processing
+    flat_scores = prediction_np.flatten()
+    flat_scores = flat_scores[flat_scores > 0]
+
+    if len(flat_scores) == 0:
+        patient_level_prediction = 0.0
+    else:
+        k = min(50, len(flat_scores))
+        topk = np.partition(flat_scores, -k)[-k:]
+        patient_level_prediction = float(np.mean(topk))"""
+    
     patient_level_prediction = float(np.max(lesion_candidates))
     full_size_detection_map = np.zeros(sitk.GetArrayFromImage(full_image).shape)
     full_size_detection_map = full_size_detection_map.astype(np.float32)
@@ -241,7 +342,11 @@ def run(args):
         img_dir=image_folder, 
         low_msk_dir=low_pred_folder, 
         save_img_dir=cropped_image_folder, 
-        margins=[100, 50, 15])
+        margins=[100, 50, 15],
+        # default_margins=[100, 50, 15],
+        # expanded_margins=[150, 75, 25]
+        )
+    
 
     # Step 4: predict on high resolution ROI using nnU-Net
     print("Step 4/4: detect PDAC on the high-resolution ROI...")
@@ -257,7 +362,12 @@ def run(args):
         store_probability_maps=True)
 
     npz_fps = sorted(glob(cropped_pred_folder + '/*.npz'))
-    img_fps = sorted(glob(image_folder + '/*.*'))
+    valid_exts = ('.mha', '.nii', '.nii.gz')
+
+    img_fps = sorted(
+        [p for p in glob(image_folder + '/*')
+        if p.endswith(valid_exts)]
+    )
     likelohood = {}
 
     for npz_fp, img_fp in zip(npz_fps, img_fps):
@@ -267,8 +377,9 @@ def run(args):
         itk_img = sitk.ReadImage(img_fp, sitk.sitkFloat32)
         prediction = np.load(npz_fp)   
         nifti_fp = npz_fp.replace('.npz', '.nii.gz')
-        prediction_postprocessed = PostProcessing(prediction, nifti_fp)
-        detection_map, patient_level_prediction = GetFullSizDetectionMap(prediction_postprocessed, crop_coordinates[filename], itk_img, args.inv_alpha)
+        prediction_postprocessed = PostProcessing(prediction,nifti_fp)
+        prediction_postprocessed = remove_small_components(prediction_postprocessed,itk_img.GetSpacing())
+        detection_map, patient_level_prediction = GetFullSizDetectionMap(prediction_postprocessed,crop_coordinates[filename],itk_img,args.inv_alpha)
         detection_map_fp = osp.join(args.output_dir, "pdac-detection-map", f'{filename}.nii.gz')
         sitk.WriteImage(detection_map, detection_map_fp)
         likelohood[f"{filename}"] = patient_level_prediction

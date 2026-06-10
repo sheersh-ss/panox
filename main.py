@@ -1,5 +1,5 @@
 # ACTIVE IMPLEMENTATION:
-#   - main_cca_analysis_filter.py
+#   - main_cca_analysis_filter.py line 176-207, 382-383
 #
 # COMMENTED REFERENCE IMPLEMENTATIONS:
 #   - main_adaptive_roi_cropping.py line 96-97, 117-128, 144-153, 346-347
@@ -172,7 +172,8 @@ def crop_roi(img_dir, low_msk_dir, save_img_dir, margins=[100, 50, 15]):
             pbar.update(1)
     return crop_coordinates
 
-def remove_small_components(prob_map, spacing, min_vol= 200):
+# function part of the CCA analysis filter implementation, which removes small disconnected prediction blobs from the PDAC probability map.
+def remove_small_components(prob_map, spacing, min_vol= 150):
     """
     Remove tiny disconnected prediction blobs using connected
     component analysis (CCA).
@@ -378,6 +379,7 @@ def run(args):
         prediction = np.load(npz_fp)   
         nifti_fp = npz_fp.replace('.npz', '.nii.gz')
         prediction_postprocessed = PostProcessing(prediction,nifti_fp)
+        # Apply connected component analysis filter to remove small disconnected prediction blobs from the PDAC probability map.
         prediction_postprocessed = remove_small_components(prediction_postprocessed,itk_img.GetSpacing())
         detection_map, patient_level_prediction = GetFullSizDetectionMap(prediction_postprocessed,crop_coordinates[filename],itk_img,args.inv_alpha)
         detection_map_fp = osp.join(args.output_dir, "pdac-detection-map", f'{filename}.nii.gz')

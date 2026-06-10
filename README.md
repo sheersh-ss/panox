@@ -1,3 +1,33 @@
+AIMI Project Phase Modifications
+
+This repository was adapted as part of the Artificial Intelligence in Medical Imaging (AIMI) project phase for the PANORAMA pancreatic cancer detection challenge. The original implementation is based on Team DTI’s winning PanDx solution for PDAC detection on contrast-enhanced CT.
+
+Our modifications focus on making the inference pipeline easier to run in a challenge/containerized setting and improving the robustness of the high-resolution region-of-interest cropping step.
+
+Added and Modified Files
+
+The following files were added or modified:
+
+* main.py
+    Updated inference pipeline. In addition to the original two-stage nnU-Net workflow, the ROI cropping step was modified to support an adaptive margin strategy based on the confidence of the low-resolution pancreas prediction.
+* Dockerfile
+    Added container support so the inference pipeline can be built and executed in a reproducible environment.
+* gc_wrapper.py
+    Added a Grand Challenge-compatible wrapper for running the method in the required challenge format.
+
+Containerized Challenge Execution
+
+A Dockerfile and gc_wrapper.py were added to support reproducible deployment and execution in a challenge environment. The wrapper connects the expected input/output structure of the challenge platform to the original main.py inference pipeline.
+
+The core model inference remains based on the original two-stage nnU-Net approach:
+
+1. Low-resolution pancreas segmentation.
+2. High-resolution ROI cropping.
+3. High-resolution PDAC detection.
+4. Patient-level likelihood computation from the maximum value in the detection map.
+
+The original README and citation information are preserved below
+
 # PanDx: AI-assisted Pancreatic Ductal Adenocarcinoma Detection 
 [![arXiv](https://img.shields.io/badge/preprint-2503.10068-blue)](https://arxiv.org/abs/2503.10068) [![cite](https://img.shields.io/badge/cite-BibTex-red)](xx) [![leaderboard](https://img.shields.io/badge/Leaderboard-yellow)](https://panorama.grand-challenge.org/evaluation/testing-phase/leaderboard/) [![website](https://img.shields.io/badge/Challenge%20website-50d13d)](https://panorama.grand-challenge.org/)
 
